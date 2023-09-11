@@ -1,0 +1,54 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: workflow-configurator-github
+spec:
+  entrypoint: configure
+  arguments:
+    parameters:
+      - name: event
+        value: comes-from-caller
+  serviceAccountName: operate-workflow-sa
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: workflow-configurator-github
+  templates:
+    - name: configure
+      dag:
+        tasks:
+          - name: read-event
+            templateRef:
+              name: configuration-operations
+              clusterScope: true
+              template: read-event
+          - name: configure-workflow
+            depends: "read-event"
+            templateRef:
+              name: workflow-wf-configurator
+              clusterScope: true
+              template: configure-workflow
+            arguments:
+              parameters:
+                - name: event-type
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.X-GitHub-Event')}}"
+                - name: repository
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.repository.ssh_url')}}"
+                - name: reponame
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.repository.name')}}"
+                - name: branch
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.ref')}}"
+                - name: commit-hash
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.head_commit.id') }}"
+                - name: commit-email
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.head_commit.author.email')}}"
+                - name: commit-user
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.head_commit.author.username')}}"
+                - name: commit-url
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.head_commit.url')}}"
+                - name: create-delete-sender
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.sender.login')}}"
+                - name: deleted
+                  value: "{{=jsonpath(tasks['read-event'].outputs.result, '$.deleted')}}"
+
+

@@ -1,0 +1,115 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: workflow-wf-configurator
+spec:
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: workflow-wf-configurator
+  templates:
+    - name: configure-workflow
+      metadata:
+        labels:
+          template: configure-workflow
+      inputs:
+        parameters:
+          - name: event-type
+          - name: repository
+          - name: reponame
+          - name: branch
+          - name: commit-hash
+          - name: commit-email
+          - name: commit-user
+          - name: commit-url
+          - name: create-delete-sender
+          - name: deleted
+      dag:
+        tasks:
+          - name: configure-create-delete-workflow
+            when: "{{inputs.parameters.event-type}} == 'create' || {{inputs.parameters.event-type}} == 'delete'"
+            templateRef:
+              name: k8s-operations
+              clusterScope: true
+              template: execute-command
+            arguments:
+              parameters:
+                - name: command
+                  value: |
+                    cat << EOF | kubectl create -f -
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      generateName: "{{ inputs.parameters.reponame }}-{{ inputs.parameters.event-type }}-"
+                      namespace: "{{ inputs.parameters.reponame }}-cicd"
+                    spec:
+                      entrypoint: {{inputs.parameters.event-type}}
+                      workflowTemplateRef:
+                        name: workflow-create-delete
+                        clusterScope: true
+                      arguments:
+                        parameters:
+                          - name: repository
+                            value: "{{ inputs.parameters.repository }}"
+                          - name: branch
+                            value: "{{=sprig.replace('refs/heads/', '', inputs.parameters['branch']) }}"
+                          - name: reponame
+                            value: "{{=sprig.lower(inputs.parameters.reponame) }}"
+                          - name: environment
+                            value: "{{=sprig.lower(sprig.replace('/', '-', sprig.replace('_', '-', sprig.replace('refs/heads/', '', inputs.parameters['branch'])))) }}"
+                          - name: commit-user
+                            value: "{{ inputs.parameters.create-delete-sender }}"
+                    EOF
+          - name: get-build-workflow-descriptor
+            templateRef:
+              name: configuration-operations
+              template: get-descriptor
+              clusterScope: true
+            depends: "configure-create-delete-workflow.Skipped"
+            when: "{{inputs.parameters.event-type}} == 'push' && !{{inputs.parameters.deleted}}"
+            arguments:
+              parameters:
+                - name: repository
+                  value: "{{ inputs.parameters.repository }}"
+                - name: reponame
+                  value: "{{=sprig.lower(inputs.parameters['reponame'])}}"
+                - name: branch
+                  value: "{{=sprig.replace('refs/heads/', '', inputs.parameters['branch']) }}"
+          - name: get-language
+            depends: "get-build-workflow-descriptor.Succeeded"
+            templateRef:
+              name: configuration-operations
+              template: get-language
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: descriptor
+                  value: "{{ tasks.get-build-workflow-descriptor.outputs.parameters.descriptor }}"
+          - name: configure-java-build
+            depends: "get-language.Succeeded"
+            when: "{{inputs.parameters.event-type}} == 'push' && {{ tasks.get-language.outputs.parameters.language }} == 'java'"
+            templateRef:
+              name: java-build-configurator
+              template: configure-build
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: repository
+                  value: "{{ inputs.parameters.repository }}"
+                - name: reponame
+                  value: "{{=sprig.lower(inputs.parameters.reponame) }}"
+                - name: branch
+                  value: "{{=sprig.replace('refs/heads/', '', inputs.parameters.branch) }}"
+                - name: environment
+                  value: "{{=sprig.lower(sprig.replace('/', '-', sprig.replace('_', '-', sprig.replace('refs/heads/', '', inputs.parameters.branch)))) }}"
+                - name: commit-hash
+                  value: "{{=inputs.parameters['commit-hash'][0:7] }}"
+                - name: commit-email
+                  value: "{{ inputs.parameters.commit-email }}"
+                - name: commit-user
+                  value: "{{ inputs.parameters.commit-user }}"
+                - name: commit-url
+                  value: "{{ inputs.parameters.commit-url }}"
+                - name: descriptor
+                  value: "{{ tasks.get-build-workflow-descriptor.outputs.parameters.descriptor }}"
+

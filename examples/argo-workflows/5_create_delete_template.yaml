@@ -1,0 +1,78 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: workflow-create-delete
+spec:
+  arguments:
+    parameters:
+      - name: repository
+      - name: branch
+      - name: reponame
+      - name: environment
+      - name: commit-user
+  serviceAccountName: operate-workflow-sa
+  templates:
+    - name: create
+      dag:
+        tasks:
+          - name: create-namespace
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "kubectl create ns {{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}"
+          - name: create-environment-infra-repository
+            templateRef:
+              name: argocd-operations
+              template: create-environment-infra-repository
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: commit-user
+                  value: "{{ workflow.parameters.commit-user }}"
+          # skips waiting for resync period of applicationset
+          - name: create-application
+            depends: "create-environment-infra-repository"
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "echo '{{ tasks.create-environment-infra-repository.outputs.parameters.application }}' | kubectl apply -f -"
+    - name: delete
+      dag:
+        tasks:
+          - name: delete-environment-infra-repository
+            templateRef:
+              name: argocd-operations
+              template: delete-environment-infra-repository
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: commit-user
+                  value: "{{ workflow.parameters.commit-user }}"
+          - name: delete-application
+            depends: "delete-environment-infra-repository || delete-environment-infra-repository.Failed" # continue on failure because application already deleted
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "echo '{{ tasks.delete-environment-infra-repository.outputs.parameters.application }}' | kubectl apply -f -"
+          - name: delete-namespace
+            depends: "delete-application || delete-application.Failed" # continue on failure because application already deleted
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "kubectl delete namespace {{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}"
