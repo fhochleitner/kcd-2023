@@ -1,0 +1,122 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: demo-microservice-gitlab
+  namespace: gp-cicd-eventbus
+spec:
+  template:
+    serviceAccountName: operate-workflow-sa
+  dependencies:
+    - name: demo-microservice-gitlab-delete
+      eventSourceName: demo-microservice-gitlab-configurator
+      eventName: demo-microservice-gitlab-event
+      filters:
+        data:
+          - path: body.after
+            type: "string"
+            operator: "="
+            value:
+              - "0000000000000000000000000000000000000000"
+      transform:
+        jq: .body.event_name = "delete"
+    - name: demo-microservice-gitlab-create
+      eventSourceName: demo-microservice-gitlab-configurator
+      eventName: demo-microservice-gitlab-event
+      filters:
+        data:
+          - path: body.before
+            type: "string"
+            operator: "="
+            value:
+              - "0000000000000000000000000000000000000000"
+      transform:
+        jq: .body.event_name = "create"
+    - name: demo-microservice-gitlab-event
+      eventSourceName: demo-microservice-gitlab-configurator
+      eventName: demo-microservice-gitlab-event
+      filters:
+        data:
+          - path: body.after
+            type: "string"
+            comparator: "!="
+            value:
+              - "0000000000000000000000000000000000000000"
+  triggers:
+    - template:
+        name: demo-microservice-gitlab-event-trigger
+        conditions: "demo-microservice-gitlab-event"
+        argoWorkflow:
+          parameters:
+            - src:
+                dependencyName: demo-microservice-gitlab-event
+                dataTemplate: '{{ toJson .Input.body }}'
+              dest: spec.arguments.parameters.0.value
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: demo-microservice-gitlab-configurator-
+                namespace: demo-microservice-gitlab-cicd
+              spec:
+                arguments:
+                  parameters:
+                    - name: event
+                      value: "must get set from payload"
+                entrypoint: configure
+                workflowTemplateRef:
+                  name: workflow-configurator-gitlab
+                  clusterScope: true
+    - template:
+        name: demo-microservice-gitlab-create-trigger
+        conditions: "demo-microservice-gitlab-create"
+        argoWorkflow:
+          parameters:
+            - src:
+                dependencyName: demo-microservice-gitlab-create
+                dataTemplate: '{{ toJson .Input.body }}'
+              dest: spec.arguments.parameters.0.value
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: demo-microservice-gitlab-configurator-
+                namespace: demo-microservice-gitlab-cicd
+              spec:
+                arguments:
+                  parameters:
+                    - name: event
+                      value: "must get set from payload"
+                entrypoint: configure
+                workflowTemplateRef:
+                  name: workflow-configurator-gitlab
+                  clusterScope: true
+    - template:
+        name: demo-microservice-gitlab-delete-trigger
+        conditions: "demo-microservice-gitlab-delete"
+        argoWorkflow:
+          parameters:
+            - src:
+                dependencyName: demo-microservice-gitlab-delete
+                dataTemplate: '{{ toJson .Input.body }}'
+              dest: spec.arguments.parameters.0.value
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: demo-microservice-gitlab-configurator-
+                namespace: demo-microservice-gitlab-cicd
+              spec:
+                arguments:
+                  parameters:
+                    - name: event
+                      value: "must get set from payload"
+                entrypoint: configure
+                workflowTemplateRef:
+                  name: workflow-configurator-gitlab
+                  clusterScope: true

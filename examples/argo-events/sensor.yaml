@@ -1,0 +1,47 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Sensor
+metadata:
+  name: demo-microservice
+  namespace: argo-events-eventbus
+spec:
+  template:
+    serviceAccountName: operate-workflow-sa
+  dependencies:
+    - name: demo-microservice-event
+      eventSourceName: demo-microservice-configurator
+      eventName: demo-microservice-event
+      filters:
+        data:
+          - path: "body.X-GitHub-Event"
+            type: string
+            value:
+              - "push"
+              - "create"
+              - "delete"
+  triggers:
+    - template:
+        name: demo-microservice-event-trigger
+        conditions: "demo-microservice-event"
+        argoWorkflow:
+          parameters:
+            - src:
+                dependencyName: demo-microservice-event
+                dataTemplate: '{{ toJson .Input.body }}'
+              dest: spec.arguments.parameters.0.value
+          operation: submit
+          source:
+            resource:
+              apiVersion: argoproj.io/v1alpha1
+              kind: Workflow
+              metadata:
+                generateName: demo-microservice-configurator-
+                namespace: demo-microservice-cicd
+              spec:
+                arguments:
+                  parameters:
+                    - name: event
+                      value: "must get set from payload"
+                entrypoint: configure
+                workflowTemplateRef:
+                  name: workflow-configurator-github
+                  clusterScope: true

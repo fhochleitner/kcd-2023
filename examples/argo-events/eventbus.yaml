@@ -1,0 +1,9 @@
+apiVersion: argoproj.io/v1alpha1
+kind: EventBus
+metadata:
+  name: default
+  namespace: argo-events-eventbus
+spec:
+  jetstream:
+    version: 2.9.21
+    replicas: 3
