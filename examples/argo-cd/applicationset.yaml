@@ -1,0 +1,41 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: demo-microservice
+  namespace: gp-cicd-tools
+spec:
+  syncPolicy:
+    preserveResourcesOnDeletion: false
+  generators:
+    - list:
+        elements:
+          - cluster: dev
+            url: https://kubernetes.default.svc
+            branch: dev
+          - cluster: qa
+            url: https://kubernetes.default.svc
+            branch: qa
+          - cluster: prod
+            url: https://kubernetes.default.svc
+            branch: prod
+          - cluster: new-feature
+            branch: main
+            url: https://kubernetes.default.svc
+  template:
+    metadata:
+      name: "demo-microservice-{{cluster}}"
+    spec:
+      project: demo-microservice
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+      source:
+        repoURL: git@github.com:gepaplexx-demos/demo-microservice-ci.git
+        targetRevision: "{{ branch }}"
+        path: apps/env/{{ cluster }}
+      destination:
+        server: "{{url}}"
+        namespace: "demo-microservice-{{cluster}}"
