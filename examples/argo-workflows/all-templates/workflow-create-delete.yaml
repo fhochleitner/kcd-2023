@@ -1,0 +1,154 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: workflow-create-delete
+spec:
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: workflow-create-delete
+  arguments:
+    parameters:
+      - name: repository
+      - name: branch
+      - name: reponame
+      - name: environment
+      - name: commit-user
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes:
+          - ReadWriteMany
+        resources:
+          requests:
+            storage: 1Gi # TODO siehe https://github.com/argoproj/argo-workflows/discussions/9738
+        storageClassName: cephfs-fspool-cluster
+  volumes:
+    - name: pipeline-secrets
+      secret:
+        secretName: workflow-{{ workflow.parameters.reponame }}
+        defaultMode: 0640
+        optional: true
+    - name: cache
+      persistentVolumeClaim:
+        claimName: cache-{{ workflow.parameters.reponame }}
+  serviceAccountName: operate-workflow-sa
+  templates:
+    - name: create
+      dag:
+        tasks:
+          - name: create-project
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "kubectl create ns {{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}"
+          - name: allow-access-from-cicd-namespace
+            depends: "create-project || create-project.Failed" # continue on failure because project already existed
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "kubectl annotate ns {{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }} network.gepardec.run/allowed-from={{ workflow.parameters.reponame }}-cicd"
+          - name: create-environment-infra-repository
+            templateRef:
+              name: argocd-operations
+              template: create-environment-infra-repository
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: commit-user
+                  value: "{{ workflow.parameters.commit-user }}"
+          - name: add-image-pull-rolebinding
+            depends: "create-project || create-project.Failed" # continue on failure because project already existed
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "oc policy add-role-to-user system:image-puller system:serviceaccount:{{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}:default --namespace {{ workflow.namespace }}"
+          - name: create-application
+            depends: "create-environment-infra-repository"
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "echo '{{ tasks.create-environment-infra-repository.outputs.parameters.application }}' | oc apply -f -"
+          - name: label-namespace-for-argocd
+            depends: "create-project || create-project.Failed" # continue on failure because project already existed"
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "oc label namespace {{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }} argocd.argoproj.io/managed-by=gp-cicd-tools"
+          - name: label-namespace-for-grafana-dashboards
+            depends: "create-project || create-project.Failed" # continue on failure because project already existed"
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "oc label namespace {{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }} monitoring.gepardec.com/managed-ns=true"
+    - name: delete
+      dag:
+        tasks:
+          - name: delete-environment-infra-repository
+            templateRef:
+              name: argocd-operations
+              template: delete-environment-infra-repository
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: commit-user
+                  value: "{{ workflow.parameters.commit-user }}"
+          - name: remove-image-pull-rolebinding
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "oc policy remove-role-from-user system:image-puller system:serviceaccount:{{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}:default --namespace {{ workflow.namespace }}"
+          - name: delete-application
+            depends: "delete-environment-infra-repository || delete-environment-infra-repository.Failed" # continue on failure because application already deleted
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "echo '{{ tasks.delete-environment-infra-repository.outputs.parameters.application }}' | oc apply -f -"
+          - name: delete-project
+            depends: "delete-application || delete-application.Failed" # continue on failure because application already deleted
+            templateRef:
+              name: k8s-operations
+              template: execute-command
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: command
+                  value: "oc delete project {{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}"
+          - name: cleanup-local-repository
+            templateRef:
+              name: maven-operations
+              template: cleanup-local-repository
+              clusterScope: true

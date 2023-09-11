@@ -1,0 +1,52 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: workflow-deploy-template
+spec:
+  entrypoint: deploy
+  arguments:
+    parameters:
+      - name: source
+        value: "comes-from-caller"
+      - name: target
+        value: "comes-from-caller"
+      - name: reponame
+        value: "comes-from-caller"
+      - name: repository
+        value: "comes-from-caller"
+      - name: resourcesOnly
+        value: "comes-from-caller"
+      - name: extraArgs
+        value: ""
+  serviceAccountName: operate-workflow-sa
+  ttlStrategy:
+    secondsAfterCompletion: 3600
+  volumes:
+    - name: pipeline-secrets
+      secret:
+        secretName: "workflow-{{=sprig.trimAll('[]', workflow.parameters.reponame) }}"
+        defaultMode: 0640
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: workflow-deploy
+  templates:
+    - name: deploy
+      dag:
+        tasks:
+          - name: deploy
+            arguments: {}
+            templateRef:
+              name: deploy-operations
+              template: deploy-from-to
+              clusterScope: true
+          - name: synchronize-argocd-application
+            depends: "deploy"
+            templateRef:
+              name: argocd-operations
+              template: sync-argocd-application
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: "application"
+                  value: "{{=sprig.trimAll('[]', workflow.parameters.reponame) }}-{{=sprig.trimAll('[]', workflow.parameters.target) }}"

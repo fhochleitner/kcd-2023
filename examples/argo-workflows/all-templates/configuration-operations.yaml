@@ -1,0 +1,84 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: configuration-operations
+spec:
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: configuration-operations
+  templates:
+    - name: read-event
+      metadata:
+        labels:
+          template: read-event
+      container:
+        image: alpine:3.6
+        command:
+          - sh
+          - -c
+        args:
+          - echo '{{ workflow.parameters.event }}'
+    - name: get-descriptor
+      metadata:
+        labels:
+          template: get-descriptor
+      inputs:
+        parameters:
+          - name: repository
+          - name: branch
+          - name: reponame
+      container:
+        image: ghcr.io/gepaplexx/go-git-workflows:latest
+        command:
+          - git-workflows
+        args:
+          - descriptor
+          - --url
+          - '{{ inputs.parameters.repository }}'
+          - --branch
+          - '{{ inputs.parameters.branch }}'
+          - --name
+          - '{{ inputs.parameters.reponame }}'
+        volumeMounts:
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/known_hosts
+            subPath: known_hosts
+            readOnly: true
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/id_rsa
+            subPath: id_rsa
+            readOnly: true
+          - name: workspace
+            mountPath: /mnt/out/
+      volumes:
+        - name: pipeline-secrets
+          secret:
+            secretName: workflow-{{ inputs.parameters.reponame }}
+            defaultMode: 0640
+            optional: true
+        - name: workspace
+          emptyDir: { }
+      outputs:
+        parameters:
+          - name: descriptor
+            valueFrom:
+              path: /mnt/out/workflow-descriptor.json
+    - name: get-language
+      metadata:
+        labels:
+          template: get-language
+      inputs:
+        parameters:
+          - name: descriptor
+      container:
+        image: alpine:3.6
+        command:
+          - sh
+          - -c
+        args:
+          - echo 'extracting language from descriptor'
+      outputs:
+        parameters:
+          - name: language
+            value: "{{=jsonpath(inputs.parameters['descriptor'], '$.build.language.name')}}"

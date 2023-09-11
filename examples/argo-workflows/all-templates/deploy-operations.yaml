@@ -1,0 +1,77 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: deploy-operations
+spec:
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: deploy-operations
+  templates:
+    - name: deploy-from-to
+      metadata:
+        labels:
+          template: deploy-from-to
+      container:
+        name: git-workflows
+        image: ghcr.io/gepaplexx/go-git-workflows:latest
+        command:
+          - "git-workflows"
+        args:
+          - deploy
+          - --url
+          - '{{ workflow.parameters.repository }}'
+          - --from-branch
+          - '{{workflow.parameters.source }}'
+          - --to-branch
+          - '{{ workflow.parameters.target }}'
+          - --name
+          - '{{ workflow.parameters.reponame }}'
+          - "--resources-only={{=sprig.trimAll('[]', workflow.parameters.resourcesOnly) }}"
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/known_hosts
+            subPath: known_hosts
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/id_rsa
+            subPath: id_rsa
+      volumes:
+        - name: workspace
+          emptyDir: {}
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "deploy-from-to"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "source"
+                value: "{{ workflow.parameters.source }}"
+              - key: "target"
+                value: "{{ inputs.parameters.target }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "deploy-from-to"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "source"
+                value: "{{ workflow.parameters.source }}"
+              - key: "target"
+                value: "{{ inputs.parameters.target }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"

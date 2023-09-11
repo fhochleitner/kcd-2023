@@ -1,0 +1,284 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: argocd-operations
+spec:
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: argocd-operations
+  templates:
+    - name: update-argocd-application
+      metadata:
+        labels:
+          template: update-argocd-application
+      container:
+        name: git
+        image: ghcr.io/gepaplexx/go-git-workflows:latest
+        command:
+          - "git-workflows"
+        args:
+          - argo-update
+          - --url
+          - '{{ workflow.parameters.repository }}'
+          - --branch
+          - '{{ workflow.parameters.branch }}'
+          - --name
+          - '{{ workflow.parameters.reponame }}'
+          - --tag
+          - '{{ workflow.parameters.commit-hash }}'
+          - --commit-user
+          - '{{ workflow.parameters.commit-user }}'
+          - --commit-email
+          - '{{ workflow.parameters.commit-email }}'
+          - --commit-ref
+          - '{{ workflow.parameters.commit-url }}'
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/known_hosts
+            subPath: known_hosts
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/id_rsa
+            subPath: id_rsa
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "sync-argocd-application"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "sync-argocd-application"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+    - name: sync-argocd-application
+      metadata:
+        labels:
+          template: sync-argocd-application
+        annotations:
+          vault.hashicorp.com/agent-inject: 'true'
+          vault.hashicorp.com/agent-run-as-same-user: 'true'
+          vault.hashicorp.com/role: cicd-reader
+          vault.hashicorp.com/service: 'https://vault.play.run.gepardec.com/'
+          vault.hashicorp.com/agent-inject-secret-argo-access: development/admin/argo-access
+          vault.hashicorp.com/agent-inject-template-argo-access: |
+            {{ with secret "development/admin/argo-access" -}}
+              export ARGOCD_URL={{ .Data.data.ARGOCD_URL }}
+            export PASSWORD={{ .Data.data.ARGOCD_PASSWORD }}
+            {{- end }}
+      inputs:
+        parameters:
+          - name: application
+      script:
+        image: quay.io/argoproj/argocd:latest
+        command: [ "bash" ]
+        source: |
+          #!/bin/bash
+          
+          set -e
+          application={{ inputs.parameters.application }}
+          source /vault/secrets/argo-access 
+          argocd login $ARGOCD_URL --username admin --password $PASSWORD --config /home/argocd/.config/credentials && \
+          argocd app sync "${application}" --config /home/argocd/.config/credentials || exit 0
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "sync-argocd-application"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "sync-argocd-application"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+
+    - name: create-environment-infra-repository
+      metadata:
+        labels:
+          template: create-environment-infra-repository
+      container:
+        name: git
+        image: ghcr.io/gepaplexx/go-git-workflows:latest
+        command:
+          - "git-workflows"
+        args:
+          - argo-create
+          - --url
+          - '{{ workflow.parameters.repository }}'
+          - --branch
+          - '{{ workflow.parameters.branch }}'
+          - --name
+          - '{{ workflow.parameters.reponame }}'
+          - --commit-user
+          - '{{ workflow.parameters.commit-user }}'
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/known_hosts
+            subPath: known_hosts
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/id_rsa
+            subPath: id_rsa
+      outputs:
+        parameters:
+          - name: application
+            valueFrom:
+              path: /mnt/out/application.yaml
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "create-environment-infra-repository"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "create-environment-infra-repository"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+
+    - name: delete-environment-infra-repository
+      metadata:
+        labels:
+          template: delete-environment-infra-repository
+      inputs:
+        parameters:
+          - name: commit-user
+      container:
+        name: git
+        image: ghcr.io/gepaplexx/go-git-workflows:latest
+        command:
+          - "git-workflows"
+        args:
+          - argo-delete
+          - --url
+          - '{{ workflow.parameters.repository }}'
+          - --branch
+          - '{{ workflow.parameters.branch }}'
+          - --name
+          - '{{ workflow.parameters.reponame }}'
+          - --commit-user
+          - '{{ workflow.parameters.commit-user }}'
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/known_hosts
+            subPath: known_hosts
+          - name: pipeline-secrets
+            mountPath: /workflow/.ssh/id_rsa
+            subPath: id_rsa
+      outputs:
+        parameters:
+          - name: application
+            valueFrom:
+              path: /mnt/out/application.yaml
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "delete-environment-infra-repository"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "delete-environment-infra-repository"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"

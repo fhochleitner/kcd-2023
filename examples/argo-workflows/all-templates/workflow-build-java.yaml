@@ -1,0 +1,203 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: workflow-build-java
+spec:
+  entrypoint: pipeline
+  arguments:
+    parameters:
+      - name: language-version
+      - name: repository
+      - name: branch
+      - name: reponame
+      - name: environment
+      - name: commit-hash
+      - name: commit-user
+      - name: commit-email
+      - name: commit-url
+      - name: image-config
+      - name: build-type
+      - name: build-type-version
+      - name: build-config
+      - name: vulnerability-scan-active
+      - name: vulnerability-scan-type
+      - name: vulnerability-scan-config
+      - name: vulnerability-scan-fail-active
+      - name: static-code-analysis-active
+      - name: static-code-analysis-type
+      - name: integration-test-active
+      - name: integration-test-type
+      - name: integration-test-config
+
+  volumeClaimTemplates:
+    - metadata:
+        name: workspace
+      spec:
+        accessModes:
+          - ReadWriteMany
+        resources:
+          requests:
+            storage: 1Gi  # aufgrund regex matcher in argo workflows kein "|' rund um den Value zulässig. daher funktioniert hier keine substitution. Falls jemand einen PR erstellen möchte: gerne!
+        storageClassName: cephfs-fspool-cluster
+  volumes:
+    - name: pipeline-secrets
+      secret:
+        secretName: workflow-{{ workflow.parameters.reponame }}
+        defaultMode: 0640
+        optional: true
+    - name: cache
+      persistentVolumeClaim:
+        claimName: cache-{{ workflow.parameters.reponame }}
+  serviceAccountName: operate-workflow-sa
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: workflow-build-java
+  templates:
+    - name: pipeline
+      metadata:
+        labels:
+          template: pipeline
+      dag:
+        tasks:
+          - name: checkout
+            templateRef:
+              name: git-operations
+              template: checkout
+              clusterScope: true
+          - name: build
+            depends: "checkout"
+            templateRef:
+              name: "{{ workflow.parameters.build-type }}-operations"
+              template: build
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: config
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.config')}}"
+                - name: config-path
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.config-path')}}"
+                - name: args
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.args')}}"
+                - name: options
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.options')}}"
+          - name: static-code-analysis
+            depends: "build"
+            when: "{{ workflow.parameters.static-code-analysis-active }}"
+            templateRef:
+              name: "{{ workflow.parameters.build-type}}-operations"
+              template: run-{{ workflow.parameters.static-code-analysis-type }}-analysis
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: config
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.config')}}"
+                - name: config-path
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.config-path')}}"
+                - name: options
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.options')}}"
+          - name: build-and-push-image
+            depends: "build"
+            templateRef:
+              name: containerimage-operations
+              template: build-and-push-image
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: containerfile
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.containerfile')}}"
+                - name: registry
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.registry')}}"
+                - name: repository
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.repository')}}"
+                - name: suffix
+                  value: "-to-scan"
+          - name: container-image-vulnerability-scan
+            depends: "build-and-push-image"
+            when: "{{ workflow.parameters.vulnerability-scan-active }}"
+            templateRef:
+              name: containerimage-operations
+              template: scan-container-image-{{workflow.parameters.vulnerability-scan-type }}
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: report-severity
+                  value: "{{=jsonpath(workflow.parameters['vulnerability-scan-config'], '$.report-severity')}}"
+                - name: registry
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.registry')}}"
+                - name: repository
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.repository')}}"
+          - name: container-security-error-build
+            depends: "build-and-push-image"
+            when: "{{ workflow.parameters.vulnerability-scan-fail-active }} && {{ workflow.parameters.vulnerability-scan-active }}"
+            templateRef:
+              name: containerimage-operations
+              template: container-security-error-build-{{ workflow.parameters.vulnerability-scan-type }}
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: registry
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.registry')}}"
+                - name: repository
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.repository')}}"
+                - name: severity
+                  value: "{{=jsonpath(workflow.parameters['vulnerability-scan-config'], '$.fail.severity')}}"
+          - name: retag-container-image
+            depends: "container-security-error-build"
+            templateRef:
+              name: containerimage-operations
+              template: retag-container-image
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: old-tag
+                  value: "{{ workflow.parameters.commit-hash }}-to-scan"
+                - name: new-tag
+                  value: "{{ workflow.parameters.commit-hash }}"
+                - name: registry
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.registry')}}"
+                - name: repository
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.repository')}}"
+          - name: generate-test-report
+            depends: "build || build.Failed || build.Errored"
+            templateRef:
+              name: "{{ workflow.parameters.build-type }}-operations"
+              template: generate-test-report
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: config
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.config')}}"
+                - name: config-path
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.config-path')}}"
+                - name: options
+                  value: "{{=jsonpath(workflow.parameters['build-config'], '$.options')}}"
+          - name: update-argocd-application
+            depends: "retag-container-image"
+            templateRef:
+              name: argocd-operations
+              template: update-argocd-application
+              clusterScope: true
+          - name: synchronize-argocd-application
+            depends: "update-argocd-application"
+            templateRef:
+              name: argocd-operations
+              template: sync-argocd-application
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: "application"
+                  value: '{{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}'
+          - name: integration-test
+            depends: "synchronize-argocd-application"
+            when: "{{ workflow.parameters.integration-test-active }}"
+            templateRef:
+              name: integration-test-{{ workflow.parameters.integration-test-type }}-operations
+              template: integration-test
+              clusterScope: true
+            arguments:
+              parameters:
+                - name: "config"
+                  value: "{{ workflow.parameters.integration-test-config }}"
+
+

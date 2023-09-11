@@ -1,0 +1,130 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: integration-test-newman-operations
+spec:
+  entrypoint: integration-test
+  arguments:
+    parameters:
+      - name: config
+  serviceAccountName: operate-workflow-sa
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: workflow-integration-test-newman
+  templates:
+    - name: integration-test
+      metadata:
+        labels:
+          template: integration-test
+      inputs:
+        parameters:
+          - name: config
+      dag:
+        tasks:
+          - name: wait-for-deployment
+            templateRef:
+              name: k8s-operations
+              template: wait-for-deployment
+              clusterScope: true
+            inputs:
+              parameters:
+                - name: registry
+                - name: repository
+            arguments:
+              parameters:
+                - name: application
+                  value: "{{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}"
+                - name: namespace
+                  value: "{{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}"
+                - name: image
+                  value: "{{=jsonpath(workflow.parameters['image-config'], '$.registry') }}/{{=jsonpath(workflow.parameters['image-config'], '$.repository') }}/{{ workflow.parameters.reponame }}:{{ workflow.parameters.commit-hash }}"
+          - name: integration-test
+            depends: "wait-for-deployment"
+            template: run-newman-tests
+            arguments:
+              parameters:
+                - name: namespace
+                  value: "{{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}"
+                - name: application
+                  value: "{{ workflow.parameters.reponame }}-{{ workflow.parameters.environment }}"
+                - name: collectionpath
+                  value: "{{=jsonpath(inputs.parameters.config, '$.collection-path') }}"
+                - name: collection
+                  value: "{{=jsonpath(inputs.parameters.config, '$.collection') }}"
+                - name: port
+                  value: "{{=jsonpath(inputs.parameters.config, '$.port') }}"
+    - name: run-newman-tests
+      metadata:
+        labels:
+          template: run-newman-tests
+      inputs:
+        parameters:
+          - name: collectionpath
+          - name: collection
+          - name: port
+          - name: application
+          - name: namespace
+      outputs:
+        artifacts:
+          - name: postman-report
+            path: "/mnt/out/{{ workflow.parameters.reponame }}-junit.html"
+            s3:
+              key: "postman-{{ workflow.parameters.reponame }}/postman-{{ workflow.parameters.reponame }}-{{ workflow.parameters.commit-hash }}.html"
+            archive:
+              none: { }
+      container:
+        name: newman
+        image: ghcr.io/gepaplexx/newman:latest
+        command:
+          - sh
+          - -c
+        args:
+          - >-
+            newman run 
+            --env-var hostname=http://{{inputs.parameters.application}}.{{inputs.parameters.namespace}}.svc.cluster.local:{{inputs.parameters.port}}
+            --reporters cli,junit,htmlextra
+            --reporter-htmlextra-export /mnt/out/{{ workflow.parameters.reponame }}-junit.html
+            /mnt/out/{{ workflow.parameters.reponame }}/{{ inputs.parameters.collectionpath }}/{{ inputs.parameters.collection }}
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "run-newman-tests"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "run-newman-tests"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"

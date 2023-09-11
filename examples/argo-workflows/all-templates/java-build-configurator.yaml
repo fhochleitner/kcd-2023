@@ -1,0 +1,101 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: java-build-configurator
+spec:
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: java-build-configurator
+  templates:
+    - name: configure-build
+      metadata:
+        labels:
+          template: configure-build
+      inputs:
+        parameters:
+          - name: repository
+          - name: reponame
+          - name: branch
+          - name: environment
+          - name: commit-user
+          - name: commit-email
+          - name: commit-hash
+          - name: descriptor
+          - name: commit-url
+      dag:
+        tasks:
+          - name: trigger-build
+            templateRef:
+              name: k8s-operations
+              clusterScope: true
+              template: execute-command
+            arguments:
+              parameters:
+                - name: command
+                  value: |
+                    cat << EOF | kubectl create -f -
+                    apiVersion: argoproj.io/v1alpha1
+                    kind: Workflow
+                    metadata:
+                      generateName: "{{ inputs.parameters.reponame }}-build-java-"
+                      namespace: {{ inputs.parameters.reponame }}-cicd
+                    spec:
+                      entrypoint: pipeline
+                      synchronization:
+                        mutex:
+                          name: "{{ inputs.parameters.reponame }}-{{ inputs.parameters.branch }}-build-java"
+                      arguments:
+                        parameters:
+                          - name: language-version
+                            value: "{{=jsonpath(inputs.parameters.descriptor, '$.build.language.version') }}"
+                          - name: repository
+                            value: "{{ inputs.parameters.repository }}"
+                          - name: branch
+                            value: "{{ inputs.parameters.branch }}"
+                          - name: reponame
+                            value: "{{ inputs.parameters.reponame }}"
+                          - name: environment
+                            value: "{{ inputs.parameters.environment }}"
+                          - name: commit-hash
+                            value: "{{ inputs.parameters.commit-hash }}"
+                          - name: commit-user
+                            value: "{{ inputs.parameters.commit-user }}"
+                          - name: commit-email
+                            value: "{{ inputs.parameters.commit-email }}"
+                          - name: commit-url
+                            value: "{{ inputs.parameters.commit-url }}"
+                          - name: image-config
+                            value: |
+                              {{=toJson(jsonpath(inputs.parameters.descriptor, '$.image')) }}
+                          - name: build-type
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.build.type.name') }}
+                          - name: build-type-version
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.build.type.version') }}
+                          - name: build-config
+                            value: |
+                              {{=toJson(jsonpath(inputs.parameters.descriptor, '$.build.type.configuration')) }}
+                          - name: vulnerability-scan-active
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.vulnerability-scan.active') }}
+                          - name: vulnerability-scan-type
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.vulnerability-scan.type.name') }}
+                          - name: vulnerability-scan-fail-active
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.vulnerability-scan.type.configuration.fail.active') }}
+                          - name: vulnerability-scan-config
+                            value: |
+                              {{=toJson(jsonpath(inputs.parameters.descriptor, '$.vulnerability-scan.type.configuration')) }}
+                          - name: static-code-analysis-active
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.build.static-code-analysis.active') }}
+                          - name: static-code-analysis-type
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.build.static-code-analysis.type.name') }}
+                          - name: integration-test-active
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.build.integration-test.active') }}
+                          - name: integration-test-type
+                            value: {{=jsonpath(inputs.parameters.descriptor, '$.build.integration-test.type.name') }}
+                          - name: integration-test-config
+                            value: |
+                              {{=toJson(jsonpath(inputs.parameters.descriptor, '$.build.integration-test.type.configuration')) }}
+                      workflowTemplateRef:
+                        name: workflow-build-java
+                        clusterScope: true
+                    EOF

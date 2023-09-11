@@ -1,0 +1,285 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: maven-operations
+spec:
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: maven-operations
+  templates:
+    - name: build
+      metadata:
+        labels:
+          template: build
+      inputs:
+        parameters:
+          - name: args
+          - name: config
+          - name: config-path
+          - name: options
+      container:
+        name: maven
+        image: ghcr.io/gepaplexx/maven:{{ workflow.parameters.build-type-version }}-{{ workflow.parameters.language-version }}
+        command:
+          - "/usr/bin/mvn-wrapper.sh"
+        args:
+          - "{{ inputs.parameters.args }}"
+          - "{{ inputs.parameters.options }}"
+          - "-f"
+          - "/mnt/out/{{ workflow.parameters.reponame }}/{{ inputs.parameters.config-path }}/{{ inputs.parameters.config }}"
+          - "-Dmaven.repo.local=/cache/{{ workflow.parameters.environment }}"
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+          - name: pipeline-secrets
+            mountPath: /root/.m2/settings.xml
+            subPath: maven-settings.xml
+          - name: cache
+            mountPath: "/cache/"
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "build"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "build"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+    - name: run-sonarqube-analysis
+      metadata:
+        labels:
+          template: run-sonarqube-analysis
+      inputs:
+        parameters:
+          - name: config
+          - name: config-path
+          - name: options
+      container:
+        name: maven
+        image: ghcr.io/gepaplexx/maven:{{ workflow.parameters.build-type-version }}-{{ workflow.parameters.language-version }}
+        command:
+          - "/usr/bin/mvn-wrapper.sh"
+        args:
+          - "sonar:sonar"
+          - "{{ inputs.parameters.options }}"
+          - "-Dsonar.login=${SONAR_TOKEN}"
+          - "-f"
+          - "/mnt/out/{{ workflow.parameters.reponame }}/{{ inputs.parameters.config-path }}/{{ inputs.parameters.config }}"
+          - "-Dmaven.repo.local=/cache/{{ workflow.parameters.environment }}"
+        env:
+          - name: SONAR_TOKEN
+            valueFrom:
+              secretKeyRef:
+                name: workflow-{{ workflow.parameters.reponame }}
+                key: sonar-login
+                optional: true
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+          - name: pipeline-secrets
+            mountPath: /root/.m2/settings.xml
+            subPath: maven-settings.xml
+          - name: cache
+            mountPath: "/cache/"
+          - name: sonar-cache
+            mountPath: "/.sonar/"
+      volumes:
+        - name: sonar-cache
+          emptyDir: { }
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "run-sonarqube-analysis"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "run-sonarqube-analysis"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+    - name: generate-test-report
+      metadata:
+        labels:
+          template: generate-test-report
+      inputs:
+        parameters:
+          - name: config
+          - name: config-path
+          - name: options
+      outputs:
+        artifacts:
+          - name: junit-report
+            path: "/mnt/out/{{ workflow.parameters.reponame }}/{{ inputs.parameters.config-path }}/target/site/"
+            s3:
+              key: "junit-{{ workflow.parameters.reponame }}/junit-{{ workflow.parameters.commit-hash }}-{{ workflow.uid }}/"
+            archive:
+              none: { }
+      container:
+        name: maven
+        image: ghcr.io/gepaplexx/maven:{{ workflow.parameters.build-type-version }}-{{ workflow.parameters.language-version }}
+        command:
+          - "/usr/bin/mvn-wrapper.sh"
+        args:
+          - "surefire-report:report-only site -DgenerateReports=false -DoutputName=index"
+          - "{{ inputs.parameters.options }}"
+          - "-f"
+          - "/mnt/out/{{ workflow.parameters.reponame }}/{{ inputs.parameters.config-path }}/{{ inputs.parameters.config }}"
+          - "-Dmaven.repo.local=/cache/{{ workflow.parameters.environment }}"
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+          - name: pipeline-secrets
+            mountPath: /root/.m2/settings.xml
+            subPath: maven-settings.xml
+          - name: cache
+            mountPath: "/cache/"
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "generate-test-report"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "generate-test-report"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+    - name: cleanup-local-repository
+      metadata:
+        labels:
+          template: cleanup-local-repository
+      script:
+        image: alpine:3.6
+        command: [ sh ]
+        source: |
+          set -ex
+          rm -rf /cache/{{ workflow.parameters.environment }}
+        volumeMounts:
+          - name: cache
+            mountPath: "/cache/"
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "cleanup-local-repository"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "cleanup-local-repository"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"

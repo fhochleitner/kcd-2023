@@ -1,0 +1,315 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: containerimage-operations
+spec:
+  workflowMetadata:
+    labels:
+      app: argo
+      clusterworkflowtemplate: containerimage-operations
+  templates:
+    - name: build-and-push-image
+      metadata:
+        labels:
+          template: build-and-push-image
+      inputs:
+        parameters:
+          - name: registry
+          - name: repository
+          - name: containerfile
+          - name: suffix
+            default: ""
+      securityContext:
+        fsGroup: 0
+      container:
+        name: buildah
+        image: ghcr.io/gepaplexx/buildah:latest
+        command:
+          - "/bin/bash"
+          - "-c"
+        args:
+          - >-
+            buildah bud
+            --build-arg=BRANCH={{ workflow.parameters.environment }}
+            --build-arg=COMMIT={{ workflow.parameters.commit-hash }}
+            --build-arg=VERSION={{ workflow.parameters.commit-hash }}
+            --build-arg=TIMESTAMP=$(date +%Y-%M-%dT%H:%M:%S)
+            -f {{ inputs.parameters.containerfile }} 
+            -t {{ inputs.parameters.registry }}/{{ inputs.parameters.repository }}/{{ workflow.parameters.reponame }}:{{ workflow.parameters.commit-hash }}{{ inputs.parameters.suffix }} 
+            /mnt/out/{{ workflow.parameters.reponame }} &&
+            buildah push  --authfile /home/build/.docker/config.json
+            {{ inputs.parameters.registry }}/{{ inputs.parameters.repository }}/{{ workflow.parameters.reponame }}:{{ workflow.parameters.commit-hash }}{{ inputs.parameters.suffix }}
+        securityContext:
+          runAsUser: 1000
+          runAsGroup: 1000
+          allowPrivilegeEscalation: true
+          capabilities:
+            add:
+              - CHOWN
+              - DAC_OVERRIDE
+              - SETGID
+              - SETUID
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/out/
+          - name: pipeline-secrets
+            mountPath: /home/build/.docker/config.json
+            subPath: config.json
+            mode: 0400
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "build-and-push-image"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "build-and-push-image"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+
+    - name: scan-container-image-trivy
+      metadata:
+        labels:
+          template: scan-container-image-trivy
+      inputs:
+        parameters:
+          - name: report-severity
+          - name: registry
+          - name: repository
+      outputs:
+        artifacts:
+          - name: trivy-report
+            path: "/mnt/out/{{ workflow.parameters.reponame }}/{{ workflow.parameters.commit-hash }}/trivy.html"
+            s3:
+              key: "trivy-{{ workflow.parameters.reponame }}/trivy-{{ workflow.parameters.commit-hash }}.html"
+            archive:
+              none: { }
+      initContainers:
+        - name: prerequisites
+          image: alpine:latest
+          command:
+            - "sh"
+          args:
+            - "-c"
+            - "mkdir -p /mnt/out/{{ workflow.parameters.reponame }}/{{ workflow.parameters.commit-hash }}/"
+          volumeMounts:
+            - mountPath: /mnt/out/
+              name: workspace
+          securityContext:
+            runAsUser: 1000
+      container:
+        name: trivy
+        image: docker.io/aquasec/trivy:latest
+        command:
+          - "trivy"
+        args:
+          - "image"
+          - "--severity={{ inputs.parameters.report-severity }}"
+          - "--format=template"
+          - "--template=@contrib/html.tpl"
+          - "--cache-dir=/tmp/trivy/cache/"
+          - "--ignore-unfixed"
+          - "--output=/mnt/out/{{ workflow.parameters.reponame }}/{{ workflow.parameters.commit-hash }}/trivy.html"
+          - "{{ inputs.parameters.registry }}/{{ inputs.parameters.repository }}/{{ workflow.parameters.reponame }}:{{ workflow.parameters.commit-hash }}-to-scan"
+        volumeMounts:
+          - name: cache
+            mountPath: /tmp/trivy/cache
+            subPath: cache
+          - name: workspace
+            mountPath: /mnt/out/
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "scan-container-image"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "scan-container-image"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+
+    - name: container-security-error-build-trivy
+      metadata:
+        labels:
+          template: scan-container-image
+      inputs:
+        parameters:
+          - name: registry
+          - name: repository
+          - name: severity
+      container:
+        name: trivy
+        image: docker.io/aquasec/trivy:latest
+        command:
+          - "trivy"
+        args:
+          - "image"
+          - "--severity={{ inputs.parameters.severity }}"
+          - "--ignore-unfixed"
+          - "--cache-dir=/tmp/trivy/cache/"
+          - "--exit-code=1"
+          - "{{ inputs.parameters.registry }}/{{ inputs.parameters.repository }}/{{ workflow.parameters.reponame }}:{{ workflow.parameters.commit-hash }}-to-scan"
+        volumeMounts:
+          - name: cache
+            mountPath: /tmp/trivy/cache
+            subPath: cache
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "fail-on-critical-vulnerabilities"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "fail-on-critical-vulnerabilities"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
+
+    - name: retag-container-image
+      metadata:
+        labels:
+          template: retag-container-image
+      inputs:
+        parameters:
+          - name: old-tag
+          - name: new-tag
+          - name: registry
+          - name: repository
+      container:
+        image: quay.io/containers/skopeo:latest
+        command:
+          - skopeo
+        args:
+          - "copy"
+          - "--authfile=/config.json"
+          - "docker://{{ inputs.parameters.registry }}/{{ inputs.parameters.repository }}/{{ workflow.parameters.reponame }}:{{ inputs.parameters.old-tag }}"
+          - "docker://{{ inputs.parameters.registry }}/{{ inputs.parameters.repository }}/{{ workflow.parameters.reponame }}:{{ inputs.parameters.new-tag }}"
+        volumeMounts:
+          - name: pipeline-secrets
+            mountPath: /config.json
+            subPath: config.json
+      metrics:
+        prometheus:
+          - name: duration_task_seconds
+            help: "Duration gauge by task name in seconds - task level"
+            labels:
+              - key: "task_name"
+                value: "retag-container-image"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+            gauge:
+              realtime: false
+              value: "{{ duration }}"
+          - name: result_task_counter
+            help: "Count of task execution by result status  - task level"
+            labels:
+              - key: "task_name"
+                value: "retag-container-image"
+              - key: "application"
+                value: "{{ workflow.parameters.reponame }}"
+              - key: "branch"
+                value: "{{ workflow.parameters.branch }}"
+              - key: "commit_user"
+                value: "{{ workflow.parameters.commit-user }}"
+              - key: "commit_email"
+                value: "{{ workflow.parameters.commit-email }}"
+              - key: status
+                value: "{{ status }}"
+              - key: "id"
+                value: "{{ workflow.uid }}"
+            counter:
+              value: "1"
